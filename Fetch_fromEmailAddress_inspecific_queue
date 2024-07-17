@@ -1,0 +1,115 @@
+import PureCloudPlatformClientV2
+from PureCloudPlatformClientV2.rest import ApiException
+import csv
+import datetime
+
+# Replace with your Genesys Cloud credentials
+CLIENT_ID = 'ClientID'
+CLIENT_SECRET = 'ClientSecret'
+
+# Replace with your target queue ID
+QUEUE_ID = 'QueueID'
+
+# Authenticate and create an API instance
+configuration = PureCloudPlatformClientV2.Configuration()
+configuration.host = 'https://api.mypurecloud.de'
+api_client = PureCloudPlatformClientV2.ApiClient()
+
+try:
+    # Retrieve access token
+    access_token = api_client.get_client_credentials_token(CLIENT_ID, CLIENT_SECRET)
+    configuration.access_token = access_token
+except ApiException as e:
+    print(f"Exception when retrieving access token: {e}")
+    print(f"HTTP response body: {e.body}")
+    exit(1)
+
+# Initialize the API instance with the authenticated configuration
+api_instance = PureCloudPlatformClientV2.ConversationsApi(api_client)
+
+# Function to fetch email interactions based on provided start and end dates
+def fetch_email_interactions(queue_id, start_date, end_date):
+    interactions = []
+    try:
+        # Define the search criteria
+        body = {
+            "interval": f"{start_date}/{end_date}",
+            "order": "asc",
+            "orderBy": "conversationStart",
+            "segmentFilters": [
+                {
+                    "type": "and",
+                    "predicates": [
+                        {
+                            "type": "dimension",
+                            "dimension": "mediaType",
+                            "value": "email"
+                        },
+                        {
+                            "type": "dimension",
+                            "dimension": "queueId",
+                            "value": queue_id
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        # Perform the search
+        api_response = api_instance.post_analytics_conversations_details_query(body)
+        #print(f"API Response: {api_response}")  # Debug statement
+        
+        conversations = api_response.conversations
+        print(f"Number of Conversations: {len(conversations)}")  # Debug statement
+
+        for conversation in conversations:
+            for participant in conversation.participants:
+                if participant.purpose == 'customer' and participant.sessions:
+                    for session in participant.sessions:
+                        if session.media_type == 'email':
+                            interactions.append({
+                                "conversationId": conversation.conversation_id,
+                                "emailAddress": session.address_from,
+                                "startTime": conversation.conversation_start,
+                                "endTime": conversation.conversation_end
+                            })
+
+        return interactions
+
+    except ApiException as e:
+        print(f"Exception when calling ConversationsApi->post_analytics_conversations_details_query: {e}")
+        print(f"HTTP response body: {e.body}")
+        return []
+
+# Function to export interactions to CSV
+def export_to_csv(interactions, file_name):
+    if not interactions:
+        print("No interactions to export.")
+        return
+    
+    keys = interactions[0].keys()
+    with open(file_name, 'w', newline='', encoding='utf-8') as output_file:
+        dict_writer = csv.DictWriter(output_file, fieldnames=keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(interactions)
+
+    print(f"Exported {len(interactions)} email interactions to {file_name}")
+
+# Prompt user to input the date range for the interaction search
+try:
+    start_date_input = '2023-05-01'  # input("Enter start date (YYYY-MM-DD): ")
+    end_date_input = '2023-05-30'  # input("Enter end date (YYYY-MM-DD): ")
+
+    start_date = datetime.datetime.strptime(start_date_input, "%Y-%m-%d").isoformat() + 'Z'
+    end_date = datetime.datetime.strptime(end_date_input, "%Y-%m-%d").isoformat() + 'Z'
+
+    # Fetch interactions and export to CSV
+    interactions = fetch_email_interactions(QUEUE_ID, start_date, end_date)
+    export_to_csv(interactions, 'email_interactions.csv')
+
+    print(f"Exported {len(interactions)} email interactions to email_interactions.csv")
+
+except ValueError as ve:
+    print(f"Error: Invalid date format. Please enter dates in YYYY-MM-DD format.")
+except Exception as ex:
+    print(f"Error: {ex}")
